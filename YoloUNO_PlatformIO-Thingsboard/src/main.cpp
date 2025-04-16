@@ -1,18 +1,20 @@
-#define LED_PIN 48
-#define SDA_PIN GPIO_NUM_11
-#define SCL_PIN GPIO_NUM_12
 
 #include <WiFi.h>
 #include <Arduino_MQTT_Client.h>
+#include <Adafruit_NeoPixel.h>
 #include <ThingsBoard.h>
 #include "DHT20.h"
 #include "Wire.h"
 #include <ArduinoOTA.h>
 
-constexpr char WIFI_SSID[] = "abcd";
-constexpr char WIFI_PASSWORD[] = "123456789";
+#define LED_PIN 48
+#define SDA_PIN GPIO_NUM_11
+#define SCL_PIN GPIO_NUM_12
 
-constexpr char TOKEN[] = "7s5pokn2se622pzn1jxu";
+constexpr char WIFI_SSID[] = "iPhone";
+constexpr char WIFI_PASSWORD[] = "777888111000";
+
+constexpr char TOKEN[] = "dll3hdlvabei7rruo53a";
 
 constexpr char THINGSBOARD_SERVER[] = "app.coreiot.io";
 constexpr uint16_t THINGSBOARD_PORT = 1883U;
@@ -102,9 +104,86 @@ const bool reconnect() {
   if (status == WL_CONNECTED) {
     return true;
   }
-  // If we aren't establish a new connection to the given WiFi network
+  // If we aren't, establish a new connection to the given WiFi network
   InitWiFi();
   return true;
+}
+
+void TaskThingsBoard(void *pvParameters) {
+  while (1) {
+    delay(5);
+
+    if (!reconnect()) {
+      continue;
+    }
+
+    if (!tb.connected()) {
+      Serial.print("Connecting to: ");
+      Serial.print(THINGSBOARD_SERVER);
+      Serial.print(" with token ");
+      Serial.println(TOKEN);
+      if (!tb.connect(THINGSBOARD_SERVER, TOKEN, THINGSBOARD_PORT)) {
+        Serial.println("Failed to connect");
+        continue;  // thay vì return, dùng continue để duy trì vòng lặp task
+      }
+
+      tb.sendAttributeData("macAddress", WiFi.macAddress().c_str());
+
+      Serial.println("Subscribing for RPC...");
+      if (!tb.RPC_Subscribe(callbacks.cbegin(), callbacks.cend())) {
+        Serial.println("Failed to subscribe for RPC");
+        continue;
+      }
+
+      if (!tb.Shared_Attributes_Subscribe(attributes_callback)) {
+        Serial.println("Failed to subscribe for shared attribute updates");
+        continue;
+      }
+
+      Serial.println("Subscribe done");
+
+      if (!tb.Shared_Attributes_Request(attribute_shared_request_callback)) {
+        Serial.println("Failed to request for shared attributes");
+        continue;
+      }
+    }
+
+    if (attributesChanged) {
+      attributesChanged = false;
+      tb.sendAttributeData(LED_STATE_ATTR, digitalRead(LED_PIN));
+    }
+
+    // Phần xử lý telemetry và các attribute
+    if (millis() - previousDataSend > telemetrySendInterval) {
+      previousDataSend = millis();
+
+      dht20.read();
+      
+      float temperature = dht20.getTemperature();
+      float humidity = dht20.getHumidity();
+
+      if (isnan(temperature) || isnan(humidity)) {
+        Serial.println("Failed to read from DHT20 sensor!");
+      } else {
+        Serial.print("Temperature: ");
+        Serial.print(temperature);
+        Serial.print(" °C, Humidity: ");
+        Serial.print(humidity);
+        Serial.println(" %");
+
+        tb.sendTelemetryData("temperature", temperature);
+        tb.sendTelemetryData("humidity", humidity);
+      }
+
+      tb.sendAttributeData("rssi", WiFi.RSSI());
+      tb.sendAttributeData("channel", WiFi.channel());
+      tb.sendAttributeData("bssid", WiFi.BSSIDstr().c_str());
+      tb.sendAttributeData("localIp", WiFi.localIP().toString().c_str());
+      tb.sendAttributeData("ssid", WiFi.SSID().c_str());
+    }
+
+    tb.loop();
+  }
 }
 
 void setup() {
@@ -112,89 +191,21 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   delay(1000);
   InitWiFi();
-
+  Serial.print("Truong Tan Huy - 2211294 ");
   Wire.begin(SDA_PIN, SCL_PIN);
   dht20.begin();
-  
+
+  // Tạo task chạy nội dung của hàm loop ban đầu
+  xTaskCreate(
+    TaskThingsBoard,      // Hàm task
+    "ThingsBoardTask",    // Tên hiển thị của task
+    4096,                 // Kích thước stack (bytes)
+    NULL,                 // Tham số truyền vào task (không có)
+    2,                    // Độ ưu tiên của task
+    NULL                  // Handle của task (không cần thiết)
+  );
 }
 
 void loop() {
-  delay(10);
-
-  if (!reconnect()) {
-    return;
-  }
-
-  if (!tb.connected()) {
-    Serial.print("Connecting to: ");
-    Serial.print(THINGSBOARD_SERVER);
-    Serial.print(" with token ");
-    Serial.println(TOKEN);
-    if (!tb.connect(THINGSBOARD_SERVER, TOKEN, THINGSBOARD_PORT)) {
-      Serial.println("Failed to connect");
-      return;
-    }
-
-    tb.sendAttributeData("macAddress", WiFi.macAddress().c_str());
-
-    Serial.println("Subscribing for RPC...");
-    if (!tb.RPC_Subscribe(callbacks.cbegin(), callbacks.cend())) {
-      Serial.println("Failed to subscribe for RPC");
-      return;
-    }
-
-    if (!tb.Shared_Attributes_Subscribe(attributes_callback)) {
-      Serial.println("Failed to subscribe for shared attribute updates");
-      return;
-    }
-
-    Serial.println("Subscribe done");
-
-    if (!tb.Shared_Attributes_Request(attribute_shared_request_callback)) {
-      Serial.println("Failed to request for shared attributes");
-      return;
-    }
-  }
-
-  if (attributesChanged) {
-    attributesChanged = false;
-    tb.sendAttributeData(LED_STATE_ATTR, digitalRead(LED_PIN));
-  }
-
-  // if (ledMode == 1 && millis() - previousStateChange > blinkingInterval) {
-  //   previousStateChange = millis();
-  //   digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-  //   Serial.print("LED state changed to: ");
-  //   Serial.println(!digitalRead(LED_PIN));
-  // }
-
-  if (millis() - previousDataSend > telemetrySendInterval) {
-    previousDataSend = millis();
-
-    dht20.read();
-    
-    float temperature = dht20.getTemperature();
-    float humidity = dht20.getHumidity();
-
-    if (isnan(temperature) || isnan(humidity)) {
-      Serial.println("Failed to read from DHT20 sensor!");
-    } else {
-      Serial.print("Temperature: ");
-      Serial.print(temperature);
-      Serial.print(" °C, Humidity: ");
-      Serial.print(humidity);
-      Serial.println(" %");
-
-      tb.sendTelemetryData("temperature", temperature);
-      tb.sendTelemetryData("humidity", humidity);
-    }
-
-    tb.sendAttributeData("rssi", WiFi.RSSI());
-    tb.sendAttributeData("channel", WiFi.channel());
-    tb.sendAttributeData("bssid", WiFi.BSSIDstr().c_str());
-    tb.sendAttributeData("localIp", WiFi.localIP().toString().c_str());
-    tb.sendAttributeData("ssid", WiFi.SSID().c_str());
-  }
-
-  tb.loop();
+  // Để trống, toàn bộ code được chuyển vào task TaskThingsBoard
 }
